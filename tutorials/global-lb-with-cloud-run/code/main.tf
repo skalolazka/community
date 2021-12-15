@@ -12,20 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-locals {
-  # Documentation here: https://cloud.google.com/vpc/docs/configure-serverless-vpc-access#firewall-rules-shared-vpc
-  firewall_nat_ip_ranges         = ["107.178.230.64/26", "35.199.224.0/19", ]
-  firewall_healthcheck_ip_ranges = ["130.211.0.0/22", "35.191.0.0/16", "108.170.220.0/23", ]
-}
-
-data "google_project" "project" {
-  project_id = var.project_id
-}
-
 # Deploy Cloud Run
 resource "google_cloud_run_service" "default" {
   for_each = toset(var.cloud_run_regions)
-  project  = data.google_project.project.project_id
+  project  = var.project_id
   name     = "${var.prefix}-${each.value}"
   location = each.value
 
@@ -34,6 +24,7 @@ resource "google_cloud_run_service" "default" {
       # Do not allow requests coming from the internet, only ones that passed GCLB or coming from the internal network
       # Documentation here: https://cloud.google.com/run/docs/securing/ingress#yaml
       "run.googleapis.com/ingress" = "internal-and-cloud-load-balancing"
+      "autoscaling.knative.dev/maxScale" = "101"
     }
   }
 
@@ -48,19 +39,13 @@ resource "google_cloud_run_service" "default" {
         }
       }
     }
-
-    metadata {
-      annotations = {
-        "autoscaling.knative.dev/maxScale" = "101"
-      }
-    }
   }
 }
 
 # Grant Cloud Run usage rights to someone who is authorized to access the end-point
 resource "google_cloud_run_service_iam_member" "default" {
   for_each = toset(var.cloud_run_regions)
-  project  = data.google_project.project.project_id
+  project  = var.project_id
   location = each.value
   service  = "${var.prefix}-${each.value}" # same as the corresponting google_cloud_run_service.default.name
   role     = "roles/run.invoker"
@@ -75,7 +60,7 @@ resource "google_cloud_run_service_iam_member" "default" {
 resource "google_compute_region_network_endpoint_group" "default" {
   for_each              = toset(var.cloud_run_regions)
   provider              = google-beta
-  project               = data.google_project.project.project_id
+  project               = var.project_id
   name                  = "${var.prefix}-neg-${each.value}"
   network_endpoint_type = "SERVERLESS"
   region                = each.value
@@ -88,7 +73,7 @@ resource "google_compute_region_network_endpoint_group" "default" {
 module "lb_serverless_negs" {
   source  = "GoogleCloudPlatform/lb-http/google//modules/serverless_negs"
   version = "5.0.0"
-  project = data.google_project.project.project_id
+  project = var.project_id
   name    = "${var.prefix}-lb"
   ssl     = false
 
@@ -123,7 +108,7 @@ module "lb_serverless_negs" {
 # Documentation: https://cloud.google.com/armor/docs/configure-security-policies
 resource "google_compute_security_policy" "ip-limit" {
   count   = length(var.source_ip_range_for_security_policy) == 0 ? 0 : 1
-  project = data.google_project.project.project_id
+  project = var.project_id
   name    = "${var.prefix}-ip-limit"
 
   rule {
